@@ -78,12 +78,18 @@ namespace Mono.Cecil.Mdb {
 				return null;
 
 			var info = new MethodDebugInformation (method);
+			info.code_size = ReadCodeSize (method);
 
 			var scopes = ReadScopes (entry, info);
 			ReadLineNumbers (entry, info);
 			ReadLocalVariables (entry, scopes);
 
 			return info;
+		}
+
+		static int ReadCodeSize (MethodDefinition method)
+		{
+			return method.Module.Read (method, (m, reader) => reader.ReadCodeSize (m));
 		}
 
 		static void ReadLocalVariables (MethodEntry entry, ScopeDebugInformation [] scopes)
@@ -184,7 +190,7 @@ namespace Mono.Cecil.Mdb {
 			var source = symbol_file.GetSourceFile (line.File);
 			return new SequencePoint (line.Offset, GetDocument (source)) {
 				StartLine = line.Row,
-				EndLine = line.EndRow,
+				EndLine = line.EndRow != -1 ? line.EndRow : line.Row,
 				StartColumn = line.Column,
 				EndColumn = line.EndColumn,
 			};

@@ -12,6 +12,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Threading;
 using SR = System.Reflection;
 
 using Mono.Collections.Generic;
@@ -117,7 +118,12 @@ namespace Mono.Cecil.Cil {
 		}
 
 		public Collection<ScopeDebugInformation> Scopes {
-			get { return scopes ?? (scopes = new Collection<ScopeDebugInformation> ()); }
+			get {
+				if (scopes == null)
+					Interlocked.CompareExchange (ref scopes, new Collection<ScopeDebugInformation> (), null);
+
+				return scopes;
+			}
 		}
 
 		public bool HasVariables {
@@ -125,7 +131,12 @@ namespace Mono.Cecil.Cil {
 		}
 
 		public Collection<VariableDebugInformation> Variables {
-			get { return variables ?? (variables = new Collection<VariableDebugInformation> ()); }
+			get {
+				if (variables == null)
+					Interlocked.CompareExchange (ref variables, new Collection<VariableDebugInformation> (), null);
+
+				return variables;
+			}
 		}
 
 		public bool HasConstants {
@@ -133,7 +144,12 @@ namespace Mono.Cecil.Cil {
 		}
 
 		public Collection<ConstantDebugInformation> Constants {
-			get { return constants ?? (constants = new Collection<ConstantDebugInformation> ()); }
+			get {
+				if (constants == null)
+					Interlocked.CompareExchange (ref constants, new Collection<ConstantDebugInformation> (), null);
+
+				return constants;
+			}
 		}
 
 		internal ScopeDebugInformation ()
@@ -258,7 +274,12 @@ namespace Mono.Cecil.Cil {
 		}
 
 		public Collection<CustomDebugInformation> CustomDebugInformations {
-			get { return custom_infos ?? (custom_infos = new Collection<CustomDebugInformation> ()); }
+			get {
+				if (custom_infos == null)
+					Interlocked.CompareExchange (ref custom_infos, new Collection<CustomDebugInformation> (), null);
+
+				return custom_infos;
+			}
 		}
 
 		internal DebugInformation ()
@@ -408,7 +429,13 @@ namespace Mono.Cecil.Cil {
 		}
 
 		public Collection<ImportTarget> Targets {
-			get { return targets ?? (targets = new Collection<ImportTarget> ()); }
+			get
+			{
+				if (targets == null)
+					Interlocked.CompareExchange (ref targets, new Collection<ImportTarget> (), null);
+
+				return targets;
+			}
 		}
 
 		public ImportDebugInformation Parent {
@@ -433,6 +460,8 @@ namespace Mono.Cecil.Cil {
 		DynamicVariable,
 		DefaultNamespace,
 		AsyncMethodBody,
+		EmbeddedSource,
+		SourceLink,
 	}
 
 	public abstract class CustomDebugInformation : DebugInformation {
@@ -485,11 +514,21 @@ namespace Mono.Cecil.Cil {
 		}
 
 		public Collection<InstructionOffset> Yields {
-			get { return yields ?? (yields = new Collection<InstructionOffset> ()); }
+			get {
+				if (yields == null)
+					Interlocked.CompareExchange (ref yields, new Collection<InstructionOffset> (), null);
+
+				return yields;
+			}
 		}
 
 		public Collection<InstructionOffset> Resumes {
-			get { return resumes ?? (resumes = new Collection<InstructionOffset> ()); }
+			get {
+				if (resumes == null)
+					Interlocked.CompareExchange (ref resumes, new Collection<InstructionOffset> (), null);
+
+				return resumes;
+			}
 		}
 
 		public MethodDefinition MoveNextMethod {
@@ -558,6 +597,57 @@ namespace Mono.Cecil.Cil {
 		}
 	}
 
+	public sealed class EmbeddedSourceDebugInformation : CustomDebugInformation {
+
+		internal byte [] content;
+		internal bool compress;
+
+		public byte [] Content {
+			get { return content; }
+			set { content = value; }
+		}
+
+		public bool Compress {
+			get { return compress; }
+			set { compress = value; }
+		}
+
+		public override CustomDebugInformationKind Kind {
+			get { return CustomDebugInformationKind.EmbeddedSource; }
+		}
+
+		public static Guid KindIdentifier = new Guid ("{0E8A571B-6926-466E-B4AD-8AB04611F5FE}");
+
+		public EmbeddedSourceDebugInformation (byte [] content, bool compress)
+			: base (KindIdentifier)
+		{
+			this.content = content;
+			this.compress = compress;
+		}
+	}
+
+	public sealed class SourceLinkDebugInformation : CustomDebugInformation {
+
+		internal string content;
+
+		public string Content {
+			get { return content; }
+			set { content = value; }
+		}
+
+		public override CustomDebugInformationKind Kind {
+			get { return CustomDebugInformationKind.SourceLink; }
+		}
+
+		public static Guid KindIdentifier = new Guid ("{CC110556-A091-4D38-9FEC-25AB9A351A6A}");
+
+		public SourceLinkDebugInformation (string content)
+			: base (KindIdentifier)
+		{
+			this.content = content;
+		}
+	}
+
 	public sealed class MethodDebugInformation : DebugInformation {
 
 		internal MethodDefinition method;
@@ -576,7 +666,12 @@ namespace Mono.Cecil.Cil {
 		}
 
 		public Collection<SequencePoint> SequencePoints {
-			get { return sequence_points ?? (sequence_points = new Collection<SequencePoint> ()); }
+			get {
+				if (sequence_points == null)
+					Interlocked.CompareExchange (ref sequence_points, new Collection<SequencePoint> (), null);
+
+				return sequence_points;
+			}
 		}
 
 		public ScopeDebugInformation Scope {
@@ -618,8 +713,10 @@ namespace Mono.Cecil.Cil {
 
 			var offset_mapping = new Dictionary<int, SequencePoint> (sequence_points.Count);
 
-			for (int i = 0; i < sequence_points.Count; i++)
-				offset_mapping.Add (sequence_points [i].Offset, sequence_points [i]);
+			for (int i = 0; i < sequence_points.Count; i++) {
+				if (!offset_mapping.ContainsKey (sequence_points [i].Offset))
+					offset_mapping.Add (sequence_points [i].Offset, sequence_points [i]);
+			}
 
 			var instructions = method.Body.Instructions;
 
@@ -695,6 +792,13 @@ namespace Mono.Cecil.Cil {
 		ISymbolReader GetSymbolReader (ModuleDefinition module, Stream symbolStream);
 	}
 
+	public enum SymbolReaderKind {
+		NativePdb,
+		PortablePdb,
+		Mdb,
+		None
+	}
+
 	public class DefaultSymbolReaderProvider : ISymbolReaderProvider {
 
 		readonly bool throw_if_no_symbol;
@@ -723,19 +827,69 @@ namespace Mono.Cecil.Cil {
 
 			var pdb_file_name = Mixin.GetPdbFileName (fileName);
 
-			if (File.Exists (pdb_file_name))
-				return Mixin.IsPortablePdb (Mixin.GetPdbFileName (fileName))
-					? new PortablePdbReaderProvider ().GetSymbolReader (module, fileName)
-					: SymbolProvider.GetReaderProvider (SymbolKind.NativePdb).GetSymbolReader (module, fileName);
+			if (File.Exists (pdb_file_name)) {
+				if (Mixin.IsPortablePdb (Mixin.GetPdbFileName (fileName)))
+					return new PortablePdbReaderProvider ().GetSymbolReader (module, fileName);
+
+				try {
+					return SymbolProvider.GetReaderProvider (SymbolKind.NativePdb).GetSymbolReader (module, fileName);
+				} catch (TypeLoadException) {
+					// We might not include support for native pdbs.
+				}
+			}
 
 			var mdb_file_name = Mixin.GetMdbFileName (fileName);
-			if (File.Exists (mdb_file_name))
-				return SymbolProvider.GetReaderProvider (SymbolKind.Mdb).GetSymbolReader (module, fileName);
+			if (File.Exists (mdb_file_name)) {
+				try {
+					return SymbolProvider.GetReaderProvider (SymbolKind.Mdb).GetSymbolReader (module, fileName);
+				} catch (TypeLoadException) {
+					// We might not include support for mdbs.
+				}
+			}
 
 			if (throw_if_no_symbol)
 				throw new FileNotFoundException (string.Format ("No symbol found for file: {0}", fileName));
 
 			return null;
+		}
+
+		public static SymbolReaderKind GetSymbolReaderKind(string fileName)
+		{
+			try
+			{
+				using (var assemblyDefinition = AssemblyDefinition.ReadAssembly(fileName))
+				{
+					if (assemblyDefinition.Modules.Count <= 0)
+						return SymbolReaderKind.None;
+
+					var module = assemblyDefinition.Modules[0];
+					var provider = new DefaultSymbolReaderProvider();
+					return provider.GetSymbolReaderKind(module, fileName);
+				}
+			}
+			catch (Exception)
+			{
+				return SymbolReaderKind.None;
+			}
+		}
+
+		public SymbolReaderKind GetSymbolReaderKind (ModuleDefinition module, string fileName)
+		{
+			if (module.Image.HasDebugTables ())
+				return SymbolReaderKind.None;
+
+			var pdb_file_name = Mixin.GetPdbFileName (fileName);
+
+			if (File.Exists (pdb_file_name))
+				return Mixin.IsPortablePdb (Mixin.GetPdbFileName (fileName))
+					? SymbolReaderKind.PortablePdb
+					: SymbolReaderKind.NativePdb;
+
+			var mdb_file_name = Mixin.GetMdbFileName (fileName);
+			if (File.Exists (mdb_file_name))
+				return SymbolReaderKind.Mdb;
+
+			return SymbolReaderKind.None;
 		}
 
 		public ISymbolReader GetSymbolReader (ModuleDefinition module, Stream symbolStream)
@@ -931,6 +1085,7 @@ namespace Mono.Cecil {
 		{
 			const uint ppdb_signature = 0x424a5342;
 
+			if (stream.Length < 4) return false;
 			var position = stream.Position;
 			try {
 				var reader = new BinaryReader (stream);

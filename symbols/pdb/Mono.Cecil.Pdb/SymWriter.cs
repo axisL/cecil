@@ -8,12 +8,80 @@
 //
 
 using System;
+using System.Collections.Generic;
+#if !READ_ONLY
+using System.Diagnostics.SymbolStore;
+#endif
 using System.Runtime.InteropServices;
 
 using Mono.Cecil.Cil;
 using Mono.Collections.Generic;
 
 #if !READ_ONLY
+
+#if NET_CORE
+namespace System.Diagnostics.SymbolStore
+{
+	// Add back some stuff that is missing in netstandard1.6
+	//[Serializable]
+	public enum SymAddressKind {
+		ILOffset = 1,
+		NativeRVA = 2,
+		NativeRegister = 3,
+		NativeRegisterRelative = 4,
+		NativeOffset = 5,
+		NativeRegisterRegister = 6,
+		NativeRegisterStack = 7,
+		NativeStackRegister = 8,
+		BitField = 9,
+		NativeSectionOffset = 10
+	}
+
+	public struct SymbolToken 
+	{
+
+		private int _val;
+
+		public SymbolToken (int val)
+		{
+			_val = val;
+		}
+
+		public override bool Equals (object obj) 
+		{
+			if (!(obj is SymbolToken))
+				return false;
+			return ((SymbolToken) obj).GetToken() == _val;
+		}
+
+		public bool Equals (SymbolToken obj)
+		{
+			return(obj.GetToken () == _val);
+		}
+		
+
+		public static bool operator == (SymbolToken a, SymbolToken b)
+		{
+			return a.Equals (b);
+		}
+
+		public static bool operator != (SymbolToken a, SymbolToken b)
+		{
+			return !a.Equals (b);
+		}
+
+		public override int GetHashCode()
+		{
+			return _val.GetHashCode(); 
+		}
+
+		public int GetToken()
+		{
+			return _val; 
+		}
+	}
+}
+#endif
 
 namespace Mono.Cecil.Pdb
 {

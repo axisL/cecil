@@ -11,6 +11,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Compression;
 using System.Text;
 
 using Mono.Collections.Generic;
@@ -103,8 +104,14 @@ namespace Mono.Cecil {
 					? symbol_reader_provider.GetSymbolReader (module, parameters.SymbolStream)
 					: symbol_reader_provider.GetSymbolReader (module, module.FileName);
 
-				if (reader != null)
-					module.ReadSymbols (reader);
+				if (reader != null) {
+					try {
+						module.ReadSymbols (reader);
+					} catch (Exception) {
+						reader.Dispose ();
+						throw;
+					}
+				}
 			}
 
 			if (module.Image.HasDebugTables ())
@@ -238,10 +245,18 @@ namespace Mono.Cecil {
 				var parameter = parameters [i];
 
 				if (parameter.HasConstraints)
-					Mixin.Read (parameter.Constraints);
+					ReadGenericParameterConstraints (parameter);
 
 				ReadCustomAttributes (parameter);
 			}
+		}
+
+		void ReadGenericParameterConstraints (GenericParameter parameter)
+		{
+			var constraints = parameter.Constraints;
+
+			for (int i = 0; i < constraints.Count; i++)
+				ReadCustomAttributes (constraints [i]);
 		}
 
 		void ReadSecurityDeclarations (ISecurityDeclarationProvider provider)
@@ -837,6 +852,12 @@ namespace Mono.Cecil {
 
 				types [i] = ReadType (i + 1);
 			}
+
+			if (module.IsWindowsMetadata()) {
+				for (uint i = 0; i < length; i++) {
+					WindowsRuntimeProjections.Project (types [i]);
+				}
+			}
 		}
 
 		static bool IsNested (TypeAttributes attributes)
@@ -948,9 +969,6 @@ namespace Mono.Cecil {
 			if (IsNested (attributes))
 				type.DeclaringType = GetNestedTypeDeclaringType (type);
 
-			if (module.IsWindowsMetadata ())
-				WindowsRuntimeProjections.Project (type);
-
 			return type;
 		}
 
@@ -1045,7 +1063,13 @@ namespace Mono.Cecil {
 			if (type != null)
 				return type;
 
-			return ReadTypeDefinition (rid);
+			type = ReadTypeDefinition (rid);
+
+			if (module.IsWindowsMetadata()) {
+				WindowsRuntimeProjections.Project (type);
+			}
+
+			return type;
 		}
 
 		TypeDefinition ReadTypeDefinition (uint rid)
@@ -2006,27 +2030,31 @@ namespace Mono.Cecil {
 		{
 			InitializeGenericConstraints ();
 
-			Collection<MetadataToken> mapping;
+			Collection<Row<uint, MetadataToken>> mapping;
 			if (!metadata.TryGetGenericConstraintMapping (generic_parameter, out mapping))
 				return false;
 
 			return mapping.Count > 0;
 		}
 
-		public Collection<TypeReference> ReadGenericConstraints (GenericParameter generic_parameter)
+		public GenericParameterConstraintCollection ReadGenericConstraints (GenericParameter generic_parameter)
 		{
 			InitializeGenericConstraints ();
 
-			Collection<MetadataToken> mapping;
+			Collection<Row<uint, MetadataToken>> mapping;
 			if (!metadata.TryGetGenericConstraintMapping (generic_parameter, out mapping))
-				return new Collection<TypeReference> ();
+				return new GenericParameterConstraintCollection (generic_parameter);
 
-			var constraints = new Collection<TypeReference> (mapping.Count);
+			var constraints = new GenericParameterConstraintCollection (generic_parameter, mapping.Count);
 
 			this.context = (IGenericContext) generic_parameter.Owner;
 
-			for (int i = 0; i < mapping.Count; i++)
-				constraints.Add (GetTypeDefOrRef (mapping [i]));
+			for (int i = 0; i < mapping.Count; i++) {
+				constraints.Add (
+					new GenericParameterConstraint (
+						GetTypeDefOrRef (mapping [i].Col2),
+						new MetadataToken (TokenType.GenericParamConstraint, mapping [i].Col1)));
+			}
 
 			metadata.RemoveGenericConstraintMapping (generic_parameter);
 
@@ -2040,15 +2068,16 @@ namespace Mono.Cecil {
 
 			var length = MoveTo (Table.GenericParamConstraint);
 
-			metadata.GenericConstraints = new Dictionary<uint, Collection<MetadataToken>> (length);
+			metadata.GenericConstraints = new Dictionary<uint, Collection<Row<uint, MetadataToken>>> (length);
 
-			for (int i = 1; i <= length; i++)
+			for (uint i = 1; i <= length; i++) {
 				AddGenericConstraintMapping (
 					ReadTableIndex (Table.GenericParam),
-					ReadMetadataToken (CodedIndex.TypeDefOrRef));
+					new Row<uint, MetadataToken> (i, ReadMetadataToken (CodedIndex.TypeDefOrRef)));
+			}
 		}
 
-		void AddGenericConstraintMapping (uint generic_parameter, MetadataToken constraint)
+		void AddGenericConstraintMapping (uint generic_parameter, Row<uint, MetadataToken> constraint)
 		{
 			metadata.SetGenericConstraintMapping (
 				generic_parameter,
@@ -2118,6 +2147,11 @@ namespace Mono.Cecil {
 		public MethodBody ReadMethodBody (MethodDefinition method)
 		{
 			return code.ReadMethodBody (method);
+		}
+
+		public int ReadCodeSize (MethodDefinition method)
+		{
+			return code.ReadCodeSize (method);
 		}
 
 		public CallSite ReadCallSite (MetadataToken token)
@@ -2319,10 +2353,6 @@ namespace Mono.Cecil {
 			}
 
 			member.token = new MetadataToken (TokenType.MemberRef, rid);
-
-			if (module.IsWindowsMetadata ())
-				WindowsRuntimeProjections.Project (member);
-
 			return member;
 		}
 
@@ -2856,10 +2886,20 @@ namespace Mono.Cecil {
 			if (signature == 0)
 				return new Collection<SequencePoint> (0);
 
-			var document = metadata.GetDocument (document_index);
+			var document = GetDocument (document_index);
 			var reader = ReadSignature (signature);
 
 			return reader.ReadSequencePoints (document);
+		}
+
+		public Document GetDocument (uint rid)
+		{
+			var document = metadata.GetDocument (rid);
+			if (document == null)
+				return null;
+
+			document.custom_infos = GetCustomDebugInformation (document);
+			return document;
 		}
 
 		void InitializeLocalScopes ()
@@ -3187,6 +3227,31 @@ namespace Mono.Cecil {
 					async_body.move_next = GetMethodDefinition (move_next_rid);
 
 					infos.Add (async_body);
+				} else if (rows [i].Col1 == EmbeddedSourceDebugInformation.KindIdentifier) {
+					var signature = ReadSignature (rows [i].Col2);
+					var format = signature.ReadInt32 ();
+					var length = signature.sig_length - 4;
+
+					var info = null as CustomDebugInformation;
+
+					if (format == 0) {
+						info = new EmbeddedSourceDebugInformation (signature.ReadBytes ((int) length), compress: false);
+					} else if (format > 0) {
+						var compressed_stream = new MemoryStream (signature.ReadBytes ((int) length));
+						var decompressed_document = new byte [format]; // if positive, format is the decompressed length of the document
+						var decompressed_stream = new MemoryStream (decompressed_document);
+
+						using (var deflate_stream = new DeflateStream (compressed_stream, CompressionMode.Decompress, leaveOpen: true))
+							deflate_stream.CopyTo (decompressed_stream);
+
+						info = new EmbeddedSourceDebugInformation (decompressed_document, compress: true);
+					} else if (format < 0) {
+						info = new BinaryCustomDebugInformation (rows [i].Col1, ReadBlob (rows [i].Col2));
+					}
+
+					infos.Add (info);
+				} else if (rows [i].Col1 == SourceLinkDebugInformation.KindIdentifier) {
+					infos.Add (new SourceLinkDebugInformation (Encoding.UTF8.GetString (ReadBlob (rows [i].Col2))));
 				} else {
 					infos.Add (new BinaryCustomDebugInformation (rows [i].Col1, ReadBlob (rows [i].Col2)));
 				}
@@ -3759,7 +3824,7 @@ namespace Mono.Cecil {
 			ReadCompressedUInt32 (); // local_sig_token
 
 			if (document == null)
-				document = reader.metadata.GetDocument (ReadCompressedUInt32 ());
+				document = reader.GetDocument (ReadCompressedUInt32 ());
 
 			var offset = 0;
 			var start_line = 0;
@@ -3769,7 +3834,7 @@ namespace Mono.Cecil {
 			for (var i = 0; CanReadMore (); i++) {
 				var delta_il = (int) ReadCompressedUInt32 ();
 				if (i > 0 && delta_il == 0) {
-					document = reader.metadata.GetDocument (ReadCompressedUInt32 ());
+					document = reader.GetDocument (ReadCompressedUInt32 ());
 					continue;
 				}
 

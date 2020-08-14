@@ -362,6 +362,11 @@ namespace Mono.Cecil.PE {
 			WriteUInt32 (characteristics);
 		}
 
+		uint GetRVAFileOffset (Section section, RVA rva)
+		{
+			return section.PointerToRawData + rva - section.VirtualAddress;
+		}
+
 		void MoveTo (uint pointer)
 		{
 			BaseStream.Seek (pointer, SeekOrigin.Begin);
@@ -369,7 +374,7 @@ namespace Mono.Cecil.PE {
 
 		void MoveToRVA (Section section, RVA rva)
 		{
-			BaseStream.Seek (section.PointerToRawData + rva - section.VirtualAddress, SeekOrigin.Begin);
+			BaseStream.Seek (GetRVAFileOffset (section, rva), SeekOrigin.Begin);
 		}
 
 		void MoveToRVA (TextSegment segment)

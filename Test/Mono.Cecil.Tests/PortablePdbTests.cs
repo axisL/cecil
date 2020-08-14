@@ -2,6 +2,7 @@
 using System;
 using System.IO;
 using System.Linq;
+using System.Text;
 using NUnit.Framework;
 
 using Mono.Cecil.Cil;
@@ -406,6 +407,115 @@ namespace Mono.Cecil.Tests {
 		}
 
 		[Test]
+		public void SourceLink ()
+		{
+			TestModule ("TargetLib.dll", module => {
+				Assert.IsTrue (module.HasCustomDebugInformations);
+				Assert.AreEqual (1, module.CustomDebugInformations.Count);
+
+				var source_link = module.CustomDebugInformations [0] as SourceLinkDebugInformation;
+				Assert.IsNotNull (source_link);
+				Assert.AreEqual ("{\"documents\":{\"C:\\\\tmp\\\\SourceLinkProblem\\\\*\":\"https://raw.githubusercontent.com/bording/SourceLinkProblem/197d965ee7f1e7f8bd3cea55b5f904aeeb8cd51e/*\"}}", source_link.Content);
+			}, symbolReaderProvider: typeof (PortablePdbReaderProvider), symbolWriterProvider: typeof (PortablePdbWriterProvider));
+		}
+
+		[Test]
+		public void EmbeddedSource ()
+		{
+			TestModule ("embedcs.exe", module => {
+				var program = GetDocument (module.GetType ("Program"));
+				var program_src = GetSourceDebugInfo (program);
+				Assert.IsTrue (program_src.compress);
+				var program_src_content = Encoding.UTF8.GetString (program_src.Content);
+				Assert.AreEqual (Normalize (@"using System;
+
+class Program
+{
+    static void Main()
+    {
+        // Hello hello hello hello hello hello
+        // Hello hello hello hello hello hello
+        // Hello hello hello hello hello hello
+        // Hello hello hello hello hello hello
+        // Hello hello hello hello hello hello
+        // Hello hello hello hello hello hello
+        // Hello hello hello hello hello hello
+        // Hello hello hello hello hello hello
+        // Hello hello hello hello hello hello
+        // Hello hello hello hello hello hello
+        // Hello hello hello hello hello hello
+        // Hello hello hello hello hello hello
+        // Hello hello hello hello hello hello
+        // Hello hello hello hello hello hello
+        // Hello hello hello hello hello hello
+        // Hello hello hello hello hello hello
+        // Hello hello hello hello hello hello
+        // Hello hello hello hello hello hello
+        // Hello hello hello hello hello hello
+        // Hello hello hello hello hello hello
+        // Hello hello hello hello hello hello
+        // Hello hello hello hello hello hello
+        // Hello hello hello hello hello hello
+        // Hello hello hello hello hello hello
+        Console.WriteLine(B.Do());
+        Console.WriteLine(A.Do());
+    }
+}
+"), Normalize (program_src_content));
+
+				var a = GetDocument (module.GetType ("A"));
+				var a_src = GetSourceDebugInfo (a);
+				Assert.IsFalse (a_src.compress);
+				var a_src_content = Encoding.UTF8.GetString (a_src.Content);
+				Assert.AreEqual (Normalize (@"class A
+{
+    public static string Do()
+    {
+        return ""A::Do"";
+    }
+}"), Normalize (a_src_content));
+
+				var b = GetDocument(module.GetType ("B"));
+				var b_src = GetSourceDebugInfo (b);
+				Assert.IsFalse (b_src.compress);
+				var b_src_content = Encoding.UTF8.GetString (b_src.Content);
+				Assert.AreEqual (Normalize (@"class B
+{
+    public static string Do()
+    {
+        return ""B::Do"";
+    }
+}"), Normalize (b_src_content));
+			}, symbolReaderProvider: typeof (PortablePdbReaderProvider), symbolWriterProvider: typeof (PortablePdbWriterProvider));
+		}
+
+		static Document GetDocument (TypeDefinition type)
+		{
+			foreach (var method in type.Methods) {
+				if (!method.HasBody)
+					continue;
+
+				foreach (var instruction in method.Body.Instructions) {
+					var sp = method.DebugInformation.GetSequencePoint (instruction);
+					if (sp != null && sp.Document != null)
+						return sp.Document;
+				}
+			}
+
+			return null;
+		}
+
+		static EmbeddedSourceDebugInformation GetSourceDebugInfo (Document document)
+		{
+			Assert.IsTrue (document.HasCustomDebugInformations);
+			Assert.AreEqual (1, document.CustomDebugInformations.Count);
+
+			var source = document.CustomDebugInformations [0] as EmbeddedSourceDebugInformation;
+			Assert.IsNotNull (source);
+			return source;
+		}
+
+		[Test]
 		public void PortablePdbLineInfo  ()
 		{
 			TestModule ("line.exe", module => {
@@ -421,6 +531,43 @@ namespace Mono.Cecil.Tests {
 			}, symbolReaderProvider: typeof (PortablePdbReaderProvider), symbolWriterProvider: typeof (PortablePdbWriterProvider));
 		}
 #endif
+
+		[Test]
+		public void DoubleWriteAndReadAgainModuleWithDeterministicMvid ()
+		{
+			Guid mvid1_in, mvid1_out, mvid2_in, mvid2_out;
+
+			{
+				const string resource = "foo.dll";
+				string destination = Path.GetTempFileName ();
+
+				using (var module = GetResourceModule (resource, new ReaderParameters {  })) {
+					mvid1_in = module.Mvid;
+					module.Write (destination, new WriterParameters { DeterministicMvid = true });
+				}
+
+				using (var module = ModuleDefinition.ReadModule (destination, new ReaderParameters { })) {
+					mvid1_out = module.Mvid;
+				}
+			}
+
+			{
+				const string resource = "hello2.exe";
+				string destination = Path.GetTempFileName ();
+
+				using (var module = GetResourceModule (resource, new ReaderParameters {  })) {
+					mvid2_in = module.Mvid;
+					module.Write (destination, new WriterParameters { DeterministicMvid = true });
+				}
+
+				using (var module = ModuleDefinition.ReadModule (destination, new ReaderParameters { })) {
+					mvid2_out = module.Mvid;
+				}
+			}
+
+			Assert.AreNotEqual (mvid1_in, mvid2_in);
+			Assert.AreNotEqual (mvid1_out, mvid2_out);
+		}
 	}
 }
 #endif

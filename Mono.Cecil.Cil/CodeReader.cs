@@ -62,6 +62,30 @@ namespace Mono.Cecil.Cil {
 			return this.body;
 		}
 
+		public int ReadCodeSize (MethodDefinition method)
+		{
+			var position = MoveTo (method);
+
+			var code_size = ReadCodeSize ();
+
+			MoveBackTo (position);
+			return code_size;
+		}
+
+		int ReadCodeSize ()
+		{
+			var flags = ReadByte ();
+			switch (flags & 0x3) {
+			case 0x2: // tiny
+				return flags >> 2;
+			case 0x3: // fat
+				Advance (-1 + 2 + 2); // go back, 2 bytes flags, 2 bytes stack size
+				return (int) ReadUInt32 ();
+			default:
+				throw new InvalidOperationException ();
+			}
+		}
+
 		void ReadMethodBody ()
 		{
 			var flags = ReadByte ();
@@ -160,7 +184,8 @@ namespace Mono.Cecil.Cil {
 		void ReadScope (ScopeDebugInformation scope)
 		{
 			var start_instruction = GetInstruction (scope.Start.Offset);
-			scope.Start = new InstructionOffset (start_instruction);
+			if (start_instruction != null)
+				scope.Start = new InstructionOffset (start_instruction);
 
 			var end_instruction = GetInstruction (scope.End.Offset);
 			scope.End = end_instruction != null
@@ -277,7 +302,9 @@ namespace Mono.Cecil.Cil {
 			case OperandType.InlineSig:
 				return GetCallSite (ReadToken ());
 			case OperandType.InlineString:
-				return GetString (ReadToken ());
+				var token = ReadToken ();
+				body.instructionTokens.Add (instruction, token);
+				return GetString (token);
 			case OperandType.InlineTok:
 			case OperandType.InlineType:
 			case OperandType.InlineMethod:

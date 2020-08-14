@@ -11,7 +11,9 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Compression;
 using System.Text;
+using System.Security.Cryptography;
 
 using Mono;
 using Mono.Collections.Generic;
@@ -108,10 +110,16 @@ namespace Mono.Cecil {
 				module.Attributes |= ModuleAttributes.StrongNameSigned;
 			}
 #endif
+            if (parameters.DeterministicMvid)
+				module.Mvid = Guid.Empty;
 
 			using (var symbol_writer = GetSymbolWriter (module, fq_name, symbol_writer_provider, parameters)) {
 				var metadata = new MetadataBuilder (module, fq_name, timestamp, symbol_writer_provider, symbol_writer);
 				BuildMetadata (module, metadata);
+
+                if (parameters.DeterministicMvid) {
+						metadata.ComputeDeterministicMvid ();
+					}
 
 				var writer = ImageWriter.CreateWriter (module, metadata, stream);
 				stream.value.SetLength (0);
@@ -1044,6 +1052,10 @@ namespace Mono.Cecil {
 
 			if (module.EntryPoint != null)
 				entry_point = LookupToken (module.EntryPoint);
+
+			var pdb_writer = symbol_writer as IMetadataSymbolWriter;
+			if (pdb_writer != null)
+				pdb_writer.WriteModule ();
 		}
 
 		void BuildAssembly ()
@@ -1275,6 +1287,8 @@ namespace Mono.Cecil {
 
 		void AttachTypeToken (TypeDefinition type)
 		{
+			var treatment = WindowsRuntimeProjections.RemoveProjection(type);
+
 			type.token = new MetadataToken (TokenType.TypeDef, type_rid++);
 			type.fields_range.Start = field_rid;
 			type.methods_range.Start = method_rid;
@@ -1287,6 +1301,8 @@ namespace Mono.Cecil {
 
 			if (type.HasNestedTypes)
 				AttachNestedTypesToken (type);
+
+			WindowsRuntimeProjections.ApplyProjection(type, treatment);
 		}
 
 		void AttachNestedTypesToken (TypeDefinition type)
@@ -1512,12 +1528,20 @@ namespace Mono.Cecil {
 		{
 			var constraints = generic_parameter.Constraints;
 
-			var rid = generic_parameter.token.RID;
+			var gp_rid = generic_parameter.token.RID;
 
-			for (int i = 0; i < constraints.Count; i++)
-				table.AddRow (new GenericParamConstraintRow (
-					rid,
-					MakeCodedRID (GetTypeToken (constraints [i]), CodedIndex.TypeDefOrRef)));
+			for (int i = 0; i < constraints.Count; i++) {
+				var constraint = constraints [i];
+
+				var rid = table.AddRow (new GenericParamConstraintRow (
+					gp_rid,
+					MakeCodedRID (GetTypeToken (constraint.ConstraintType), CodedIndex.TypeDefOrRef)));
+
+				constraint.token = new MetadataToken (TokenType.GenericParamConstraint, rid);
+
+				if (constraint.HasCustomAttributes)
+					AddCustomAttributes (constraint);
+			}
 		}
 
 		void AddInterfaces (TypeDefinition type)
@@ -1957,15 +1981,11 @@ namespace Mono.Cecil {
 
 		MetadataToken GetMemberRefToken (MemberReference member)
 		{
-			var projection = WindowsRuntimeProjections.RemoveProjection (member);
-
 			var row = CreateMemberRefRow (member);
 
 			MetadataToken token;
 			if (!member_ref_map.TryGetValue (row, out token))
 				token = AddMemberReference (member, row);
-
-			WindowsRuntimeProjections.ApplyProjection (member, projection);
 
 			return token;
 		}
@@ -2339,7 +2359,7 @@ namespace Mono.Cecil {
 			return signature;
 		}
 
-		void AddCustomDebugInformations (ICustomDebugInformationProvider provider)
+		public void AddCustomDebugInformations (ICustomDebugInformationProvider provider)
 		{
 			if (!provider.HasCustomDebugInformations)
 				return;
@@ -2358,6 +2378,12 @@ namespace Mono.Cecil {
 					break;
 				case CustomDebugInformationKind.StateMachineScope:
 					AddStateMachineScopeDebugInformation (provider, (StateMachineScopeDebugInformation) custom_info);
+					break;
+				case CustomDebugInformationKind.EmbeddedSource:
+					AddEmbeddedSourceDebugInformation (provider, (EmbeddedSourceDebugInformation) custom_info);
+					break;
+				case CustomDebugInformationKind.SourceLink:
+					AddSourceLinkDebugInformation (provider, (SourceLinkDebugInformation) custom_info);
 					break;
 				default:
 					throw new NotImplementedException ();
@@ -2393,6 +2419,36 @@ namespace Mono.Cecil {
 			}
 
 			AddCustomDebugInformation (provider, async_method, signature);
+		}
+
+		void AddEmbeddedSourceDebugInformation (ICustomDebugInformationProvider provider, EmbeddedSourceDebugInformation embedded_source)
+		{
+			var signature = CreateSignatureWriter ();
+			var content = embedded_source.content ?? Empty<byte>.Array;
+			if (embedded_source.compress) {
+				signature.WriteInt32 (content.Length);
+
+				var decompressed_stream = new MemoryStream (content);
+				var content_stream = new MemoryStream ();
+
+				using (var compress_stream = new DeflateStream (content_stream, CompressionMode.Compress, leaveOpen: true))
+					decompressed_stream.CopyTo (compress_stream);
+
+				signature.WriteBytes (content_stream.ToArray ());
+			} else {
+				signature.WriteInt32 (0);
+				signature.WriteBytes (content);
+			}
+
+			AddCustomDebugInformation (provider, embedded_source, signature);
+		}
+
+		void AddSourceLinkDebugInformation (ICustomDebugInformationProvider provider, SourceLinkDebugInformation source_link)
+		{
+			var signature = CreateSignatureWriter ();
+			signature.WriteBytes (Encoding.UTF8.GetBytes (source_link.content));
+
+			AddCustomDebugInformation (provider, source_link, signature);
 		}
 
 		void AddCustomDebugInformation (ICustomDebugInformationProvider provider, CustomDebugInformation custom_info, SignatureWriter signature)
@@ -2499,6 +2555,8 @@ namespace Mono.Cecil {
 
 			document.token = token;
 
+			AddCustomDebugInformations (document);
+
 			document_map.Add (document.Url, token);
 
 			return token;
@@ -2572,6 +2630,25 @@ namespace Mono.Cecil {
 			signature.WriteSequencePoints (info);
 
 			method_debug_information_table.rows [rid - 1].Col2 = GetBlobIndex (signature);
+		}
+
+		public void ComputeDeterministicMvid ()
+		{
+			var guid = CryptoService.ComputeGuid (CryptoService.ComputeHash (
+				data,
+				resources,
+				string_heap,
+				user_string_heap,
+				blob_heap,
+				table_heap,
+				code));
+
+			var position = guid_heap.position;
+			guid_heap.position = 0;
+			guid_heap.WriteBytes (guid.ToByteArray ());
+			guid_heap.position = position;
+
+			module.Mvid = guid;
 		}
 	}
 
@@ -2890,7 +2967,7 @@ namespace Mono.Cecil {
 				break;
 			case ElementType.None:
 				if (type.IsTypeOf ("System", "Type"))
-					WriteTypeReference ((TypeReference) value);
+					WriteCustomAttributeTypeValue ((TypeReference) value);
 				else
 					WriteCustomAttributeEnumValue (type, value);
 				break;
@@ -2898,6 +2975,27 @@ namespace Mono.Cecil {
 				WritePrimitiveValue (value);
 				break;
 			}
+		}
+
+		private void WriteCustomAttributeTypeValue (TypeReference value)
+		{
+			var typeDefinition = value as TypeDefinition;
+			TypeDefinition outermostDeclaringType = typeDefinition;
+
+			if (typeDefinition != null) {
+				while (outermostDeclaringType.DeclaringType != null)
+					outermostDeclaringType = outermostDeclaringType.DeclaringType;
+
+				// In CLR .winmd files, custom attribute arguments reference unmangled type names (rather than <CLR>Name)
+				if (WindowsRuntimeProjections.IsClrImplementationType (outermostDeclaringType)) {
+					WindowsRuntimeProjections.Project (outermostDeclaringType);
+					WriteTypeReference (value);
+					WindowsRuntimeProjections.RemoveProjection (outermostDeclaringType);
+					return;
+				}
+			}
+
+			WriteTypeReference (value);
 		}
 
 		void WritePrimitiveValue (object value)

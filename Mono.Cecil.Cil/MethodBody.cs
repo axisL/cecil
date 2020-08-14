@@ -9,6 +9,7 @@
 //
 
 using System;
+using System.Collections.Generic;
 using System.Threading;
 
 using Mono.Collections.Generic;
@@ -28,6 +29,8 @@ namespace Mono.Cecil.Cil {
 		internal Collection<Instruction> instructions;
 		internal Collection<ExceptionHandler> exceptions;
 		internal Collection<VariableDefinition> variables;
+		ScopeDebugInformation scope;
+		internal Dictionary<Instruction, MetadataToken> instructionTokens;
 
 		public MethodDefinition Method {
 			get { return method; }
@@ -53,7 +56,12 @@ namespace Mono.Cecil.Cil {
 		}
 
 		public Collection<Instruction> Instructions {
-			get { return instructions ?? (instructions = new InstructionCollection (method)); }
+			get {
+				if (instructions == null)
+					Interlocked.CompareExchange (ref instructions, new InstructionCollection(method), null);
+
+				return instructions;
+			}
 		}
 
 		public bool HasExceptionHandlers {
@@ -61,7 +69,12 @@ namespace Mono.Cecil.Cil {
 		}
 
 		public Collection<ExceptionHandler> ExceptionHandlers {
-			get { return exceptions ?? (exceptions = new Collection<ExceptionHandler> ()); }
+			get {
+				if (exceptions == null)
+					Interlocked.CompareExchange (ref exceptions, new Collection<ExceptionHandler> (), null);
+
+				return exceptions;
+			}
 		}
 
 		public bool HasVariables {
@@ -69,7 +82,17 @@ namespace Mono.Cecil.Cil {
 		}
 
 		public Collection<VariableDefinition> Variables {
-			get { return variables ?? (variables = new VariableDefinitionCollection ()); }
+			get	{
+				if (variables == null)
+					Interlocked.CompareExchange (ref variables, new VariableDefinitionCollection(), null);
+
+				return variables;
+			}
+		}
+
+		public ScopeDebugInformation Scope {
+			get { return scope; }
+			set { scope = value; }
 		}
 
 		public ParameterDefinition ThisParameter {
@@ -109,11 +132,17 @@ namespace Mono.Cecil.Cil {
 		public MethodBody (MethodDefinition method)
 		{
 			this.method = method;
+			instructionTokens = new Dictionary<Instruction, MetadataToken> ();
 		}
 
 		public ILProcessor GetILProcessor ()
 		{
 			return new ILProcessor (this);
+		}
+
+		public bool GetInstructionToken (Instruction instruction, out MetadataToken token)
+		{
+			return instructionTokens.TryGetValue (instruction, out token);
 		}
 	}
 

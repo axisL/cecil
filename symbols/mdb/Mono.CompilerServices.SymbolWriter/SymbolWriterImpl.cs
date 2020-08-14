@@ -36,6 +36,144 @@ using System.Runtime.CompilerServices;
 using System.Collections;
 using System.IO;
 using System.Diagnostics.SymbolStore;
+#if NET_CORE
+namespace System.Diagnostics.SymbolStore
+{
+	// Add back some stuff that is missing in netstandard1.6
+	[Serializable]
+	public enum SymAddressKind {
+		ILOffset = 1,
+		NativeRVA = 2,
+		NativeRegister = 3,
+		NativeRegisterRelative = 4,
+		NativeOffset = 5,
+		NativeRegisterRegister = 6,
+		NativeRegisterStack = 7,
+		NativeStackRegister = 8,
+		BitField = 9,
+		NativeSectionOffset = 10
+	}
+
+	public struct SymbolToken 
+	{
+
+		private int _val;
+
+		public SymbolToken (int val)
+		{
+			_val = val;
+		}
+
+		public override bool Equals (object obj) 
+		{
+			if (!(obj is SymbolToken))
+				return false;
+			return ((SymbolToken) obj).GetToken() == _val;
+		}
+
+		public bool Equals (SymbolToken obj)
+		{
+			return(obj.GetToken () == _val);
+		}
+		
+
+		public static bool operator == (SymbolToken a, SymbolToken b)
+		{
+			return a.Equals (b);
+		}
+
+		public static bool operator != (SymbolToken a, SymbolToken b)
+		{
+			return !a.Equals (b);
+		}
+
+		public override int GetHashCode()
+		{
+			return _val.GetHashCode(); 
+		}
+
+		public int GetToken()
+		{
+			return _val; 
+		}
+	}
+
+	public interface ISymbolDocumentWriter {
+		void SetCheckSum (Guid algorithmId, byte[] checkSum);
+		void SetSource (byte[] source);
+	}
+
+	public interface ISymbolWriter {
+		void Close ();
+		void CloseMethod ();
+		void CloseNamespace ();
+		void CloseScope (int endOffset);
+		ISymbolDocumentWriter DefineDocument(
+			string url,
+			Guid language,
+			Guid languageVendor,
+			Guid documentType);
+		void DefineField (
+			SymbolToken parent,
+			string name,
+			FieldAttributes attributes,
+			byte[] signature,
+			SymAddressKind addrKind,
+			int addr1,
+			int addr2,
+			int addr3);
+		void DefineGlobalVariable (
+			string name,
+			FieldAttributes attributes,
+			byte[] signature,
+			SymAddressKind addrKind,
+			int addr1,
+			int addr2,
+			int addr3);
+		void DefineLocalVariable (
+			string name,
+			FieldAttributes attributes,
+			byte[] signature,
+			SymAddressKind addrKind,
+			int addr1,
+			int addr2,
+			int addr3,
+			int startOffset,
+			int endOffset);
+		void DefineParameter (
+			string name,
+			ParameterAttributes attributes,
+			int sequence,
+			SymAddressKind addrKind,
+			int addr1,
+			int addr2,
+			int addr3);
+		void DefineSequencePoints (
+			ISymbolDocumentWriter document,
+			int[] offsets,
+			int[] lines,
+			int[] columns,
+			int[] endLines,
+			int[] endColumns);
+		void Initialize (IntPtr emitter, string filename, bool fFullBuild);
+		void OpenMethod (SymbolToken method);
+		void OpenNamespace (string name);
+		int OpenScope (int startOffset);
+		void SetMethodSourceRange (
+			ISymbolDocumentWriter startDoc,
+			int startLine,
+			int startColumn,
+			ISymbolDocumentWriter endDoc,
+			int endLine,
+			int endColumn);
+		void SetScopeRange (int scopeID, int startOffset, int endOffset);
+		void SetSymAttribute (SymbolToken parent, string name, byte[] data);
+		void SetUnderlyingWriter (IntPtr underlyingWriter);
+		void SetUserEntryPoint (SymbolToken entryMethod);
+		void UsingNamespace (string fullName);
+	}
+}
+#endif
 
 namespace Mono.CompilerServices.SymbolWriter
 {

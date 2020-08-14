@@ -15,6 +15,10 @@ using System.Text;
 
 using Mono.Collections.Generic;
 
+#if NET_CORE
+using System.Reflection;
+#endif
+
 namespace Mono.Cecil {
 
 	public delegate AssemblyDefinition AssemblyResolveEventHandler (object sender, AssemblyNameReference reference);
@@ -45,7 +49,12 @@ namespace Mono.Cecil {
 		}
 
 		public AssemblyResolutionException (AssemblyNameReference reference)
-			: base (string.Format ("Failed to resolve assembly: '{0}'", reference))
+			: this (reference, null)
+		{
+		}
+
+		public AssemblyResolutionException (AssemblyNameReference reference, Exception innerException)
+			: base (string.Format ("Failed to resolve assembly: '{0}'", reference), innerException)
 		{
 			this.reference = reference;
 		}
@@ -60,7 +69,6 @@ namespace Mono.Cecil {
 #endif
 	}
 
-#if !NET_CORE
 	public abstract class BaseAssemblyResolver : IAssemblyResolver {
 
 		static readonly bool on_mono = Type.GetType ("Mono.Runtime") != null;
@@ -122,10 +130,17 @@ namespace Mono.Cecil {
 				};
 			}
 
+#if !NET_CORE
 			var framework_dir = Path.GetDirectoryName (typeof (object).Module.FullyQualifiedName);
+#else
+			var framework_dir = Path.GetDirectoryName (typeof (object).GetTypeInfo().Module.FullyQualifiedName);
+#endif
+			var framework_dirs = on_mono
+				? new [] { framework_dir, Path.Combine (framework_dir, "Facades") }
+				: new [] { framework_dir };
 
 			if (IsZero (name.Version)) {
-				assembly = SearchDirectory (name, new [] { framework_dir }, parameters);
+				assembly = SearchDirectory (name, framework_dirs, parameters);
 				if (assembly != null)
 					return assembly;
 			}
@@ -140,7 +155,7 @@ namespace Mono.Cecil {
 			if (assembly != null)
 				return assembly;
 
-			assembly = SearchDirectory (name, new [] { framework_dir }, parameters);
+			assembly = SearchDirectory (name, framework_dirs, parameters);
 			if (assembly != null)
 				return assembly;
 
@@ -180,14 +195,26 @@ namespace Mono.Cecil {
 		AssemblyDefinition GetCorlib (AssemblyNameReference reference, ReaderParameters parameters)
 		{
 			var version = reference.Version;
+#if !NET_CORE
 			var corlib = typeof (object).Assembly.GetName ();
+#else
+			var corlib = typeof (object).GetTypeInfo().Assembly.GetName ();
+#endif
 
 			if (corlib.Version == version || IsZero (version))
+#if !NET_CORE
 				return GetAssembly (typeof (object).Module.FullyQualifiedName, parameters);
+#else
+				return GetAssembly (typeof (object).GetTypeInfo().Module.FullyQualifiedName, parameters);
+#endif
 
 			var path = Directory.GetParent (
 				Directory.GetParent (
-					typeof (object).Module.FullyQualifiedName).FullName
+#if !NET_CORE
+					typeof(object).Module.FullyQualifiedName).FullName
+#else
+					typeof(object).GetTypeInfo().Module.FullyQualifiedName).FullName
+#endif
 				).FullName;
 
 			if (on_mono) {
@@ -271,7 +298,11 @@ namespace Mono.Cecil {
 		{
 			return Path.Combine (
 				Directory.GetParent (
+#if !NET_CORE
 					Path.GetDirectoryName (typeof (object).Module.FullyQualifiedName)).FullName,
+#else
+					Path.GetDirectoryName (typeof (object).GetTypeInfo().Module.FullyQualifiedName)).FullName,
+#endif
 				"gac");
 		}
 
@@ -344,5 +375,4 @@ namespace Mono.Cecil {
 		{
 		}
 	}
-#endif
 }

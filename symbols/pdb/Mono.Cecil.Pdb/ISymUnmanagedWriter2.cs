@@ -8,6 +8,9 @@
 //
 
 using System;
+#if !READ_ONLY
+using System.Diagnostics.SymbolStore;
+#endif
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.ComTypes;
 
